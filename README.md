@@ -69,6 +69,7 @@ Compared with routing everything through plain Chat Completions compatibility, t
 - **Multi-Provider Anthropic Proxy Routes**: Add global provider configs and call external Anthropic-compatible APIs via `/:provider/v1/messages` and `/:provider/v1/models`.
 - **Accurate Claude Token Counting**: Optionally forward `/v1/messages/count_tokens` requests for Claude models to Anthropic's free token counting endpoint for exact counts instead of GPT tokenizer estimation.
 - **GPT Context Management**: Configurable context compaction for long-running GPT conversations via `responsesApiContextManagementModels`, reducing unnecessary premium requests when approaching token limits. See [Configuration](#configuration-configjson) for details.
+- **Anthropic API Primary + Copilot Fallback**: Route Claude requests to the official Anthropic API first (using your own subscription or OAuth token), and automatically fall back to Copilot when the 5-hour quota is exhausted. Zero configuration required on the Claude Code side. See [Anthropic API Primary Provider with Copilot Fallback](#anthropic-api-primary-provider-with-copilot-fallback) for setup details.
 
 ## Better Agent Semantics
 
@@ -336,6 +337,11 @@ The following command line options are available for the `start` command:
 - **useMessagesApi:** When `true`, Claude-family models that support Copilot's native `/v1/messages` endpoint will use the Messages API; otherwise they fall back to `/chat/completions`. Set to `false` to disable Messages API routing and always use `/chat/completions`. Defaults to `true`.
 - **useResponsesApiWebSearch:** When `true`, the server keeps Responses API tools with `type: "web_search"` and forwards them upstream. Set to `false` to strip those tools from `/responses` payloads. Defaults to `true`.
 - **anthropicApiKey:** Anthropic API key used for accurate Claude token counting (see [Accurate Claude Token Counting](#accurate-claude-token-counting) below). Can also be set via the `ANTHROPIC_API_KEY` environment variable. If not set, token counting falls back to GPT tokenizer estimation.
+- **primaryProvider:** Enables the Anthropic API primary provider feature. When configured, Claude model requests are forwarded to Anthropic first and fall back to Copilot on quota exhaustion. See [Anthropic API Primary Provider with Copilot Fallback](#anthropic-api-primary-provider-with-copilot-fallback) for full setup details.
+  - `baseUrl`: Anthropic API base URL, typically `https://api.anthropic.com`.
+  - `authMode`: `"forward"` to pass the client's `Authorization` header through (for OAuth users), or `"apiKey"` to use a fixed key.
+  - `apiKey` (required when `authMode` is `"apiKey"`): The Anthropic API key to use.
+- **primaryFallbackModelMap:** Optional model name remapping applied when falling back to Copilot. Keys are the model IDs received from the client; values are the model IDs sent to Copilot. Useful when you want Copilot to use a different (e.g., cheaper) model than the one requested.
 
 Edit this file to customize prompts or swap in your own fast model. Restart the server (or rerun the command) after changes so the cached config is refreshed.
 
@@ -621,6 +627,106 @@ Here is an example `.claude/settings.json` file:
 You can find more options here: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
 You can also read more about IDE integration here: [Add Claude Code to your IDE](https://docs.anthropic.com/en/docs/claude-code/ide-integrations)
+
+## Anthropic API Primary Provider with Copilot Fallback
+
+If you have a Claude Max (or Pro) subscription, you can configure the proxy to **use your official Anthropic API quota first** and automatically fall back to Copilot when the 5-hour limit is hit — all without touching your Claude Code settings.
+
+### How it works
+
+```
+Claude Code (ANTHROPIC_BASE_URL=localhost:4141)
+  ↓
+Copilot API Proxy
+  ├─ [quota available] → Anthropic API (your subscription)
+  │                           └─ success → return response
+  └─ [429 quota limit hit] → mark rate-limited → Copilot backend
+                                  └─ auto-retry Anthropic after reset time
+```
+
+Claude models go to Anthropic first. Non-Claude models (GPT family) always go directly to Copilot and are unaffected. When Anthropic returns a `429` with a quota-type error, the proxy marks itself rate-limited until the reset time in the response headers, then automatically resumes using Anthropic.
+
+### Configuration
+
+Add a `primaryProvider` block to `~/.local/share/copilot-api/config.json`:
+
+**Option A — Forward the OAuth token from Claude Code (recommended for Max/Pro subscribers)**
+
+This mode forwards whatever `Authorization` header Claude Code sends. If you are already logged in with `claude /login`, your OAuth token is used automatically. No API key needed.
+
+```json
+{
+  "primaryProvider": {
+    "baseUrl": "https://api.anthropic.com",
+    "authMode": "forward"
+  }
+}
+```
+
+**Option B — Use a dedicated Anthropic API key**
+
+```json
+{
+  "primaryProvider": {
+    "baseUrl": "https://api.anthropic.com",
+    "authMode": "apiKey",
+    "apiKey": "sk-ant-..."
+  }
+}
+```
+
+### Claude Code settings
+
+No extra configuration is needed beyond the standard proxy setup. Do **not** set `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` in your Claude Code `settings.json` — just point `ANTHROPIC_BASE_URL` at the proxy and let your OAuth login handle authentication:
+
+```json
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:4141",
+    "ANTHROPIC_MODEL": "claude-opus-4.6",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-4.6",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001",
+    "DISABLE_NON_ESSENTIAL_MODEL_CALLS": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0",
+    "CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION": "false"
+  }
+}
+```
+
+### One-command launcher
+
+The included `run-claude-with-proxy.sh` script starts the proxy (or reuses a running one) and then launches Claude Code with the correct environment variables already set:
+
+```sh
+./run-claude-with-proxy.sh                    # launch Claude Code
+./run-claude-with-proxy.sh --continue         # resume last session
+./run-claude-with-proxy.sh /path/to/project   # open a specific project
+```
+
+The script reads `COPILOT_API_PORT` (default `4141`) and `ANTHROPIC_BASE_URL` from the environment, so it adapts to custom port configurations automatically.
+
+### Fallback model mapping (optional)
+
+When Copilot is used as the fallback, you can remap model names — for example, if you want the Copilot backend to use a faster or cheaper model for certain requests:
+
+```json
+{
+  "primaryProvider": {
+    "baseUrl": "https://api.anthropic.com",
+    "authMode": "forward"
+  },
+  "primaryFallbackModelMap": {
+    "claude-opus-4.6": "claude-sonnet-4.6"
+  }
+}
+```
+
+Keys are the model IDs that Claude Code sends; values are the model IDs that Copilot receives. Models not listed keep their original name.
+
+### Status tracking
+
+The proxy tracks which backend handled each request. You can see the current backend (`primary` or `copilot`) and request counts in the usage viewer at `http://localhost:4141/usage-viewer`.
 
 ## Plugin Integrations
 
