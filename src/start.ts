@@ -6,7 +6,7 @@ import consola from "consola"
 import { serve, type ServerHandler } from "srvx"
 import invariant from "tiny-invariant"
 
-import { mergeConfigWithDefaults } from "./lib/config"
+import { mergeConfigWithDefaults, getPrimaryProviderConfig } from "./lib/config"
 import { initOpencodeVersion } from "./lib/opencode"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
@@ -80,6 +80,13 @@ export async function runServer(options: RunServerOptions): Promise<void> {
   consola.info(
     `Available models: \n${state.models?.data.map((model) => `- ${model.id}`).join("\n")}`,
   )
+
+  const primaryConfig = getPrimaryProviderConfig()
+  if (primaryConfig) {
+    consola.info(
+      `[Primary] Anthropic API fallback enabled: ${primaryConfig.baseUrl} (auth: ${primaryConfig.authMode})`,
+    )
+  }
 
   const serverUrl = `http://localhost:${options.port}`
 

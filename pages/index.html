@@ -190,6 +190,47 @@
           </form>
         </div>
 
+        <!-- Proxy Status Section (auto-refreshes independently) -->
+        <section id="proxy-status-section" class="mb-6" style="display: none;">
+          <h2
+            class="text-xl font-bold mb-3 flex items-center gap-2"
+            style="color: var(--color-fg-lightest)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--color-aqua-accent)"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            <span>Proxy Status</span>
+            <span id="proxy-status-dot" class="inline-block w-2.5 h-2.5 rounded-full" style="background-color: var(--color-gray)"></span>
+          </h2>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- Current Backend -->
+            <div class="p-4 border" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
+              <p class="text-xs font-semibold uppercase tracking-wider mb-1" style="color: var(--color-gray)">Current Backend</p>
+              <p id="proxy-current-backend" class="text-2xl font-bold" style="color: var(--color-fg-lightest)">--</p>
+              <p id="proxy-last-used" class="text-xs mt-1" style="color: var(--color-gray)">Last used: --</p>
+            </div>
+            <!-- Request Counts -->
+            <div class="p-4 border" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
+              <p class="text-xs font-semibold uppercase tracking-wider mb-1" style="color: var(--color-gray)">Request Counts</p>
+              <div class="flex gap-4 items-baseline">
+                <div>
+                  <span id="proxy-primary-count" class="text-2xl font-bold" style="color: var(--color-green-accent)">0</span>
+                  <span class="text-xs ml-1" style="color: var(--color-gray)">Anthropic</span>
+                </div>
+                <div>
+                  <span id="proxy-copilot-count" class="text-2xl font-bold" style="color: var(--color-blue-accent)">0</span>
+                  <span class="text-xs ml-1" style="color: var(--color-gray)">Copilot</span>
+                </div>
+              </div>
+              <p id="proxy-total-count" class="text-xs mt-1" style="color: var(--color-gray)">Total: 0</p>
+            </div>
+            <!-- Rate Limit Status -->
+            <div class="p-4 border" style="background-color: var(--color-bg-soft); border-color: var(--color-bg-light-2);">
+              <p class="text-xs font-semibold uppercase tracking-wider mb-1" style="color: var(--color-gray)">Rate Limit</p>
+              <p id="proxy-rate-limit-status" class="text-lg font-bold" style="color: var(--color-green-accent)">OK</p>
+              <p id="proxy-rate-limit-detail" class="text-xs mt-1" style="color: var(--color-gray)">No rate limit active</p>
+            </div>
+          </div>
+        </section>
+
         <!-- Content Area for dynamic data -->
         <main id="content-area"></main>
       </div>
@@ -518,6 +559,86 @@
 
         // Start the app
         init();
+
+        // --- Proxy Status Auto-Refresh ---
+        (function initProxyStatus() {
+          const section = document.getElementById("proxy-status-section");
+          const dot = document.getElementById("proxy-status-dot");
+          const currentBackendEl = document.getElementById("proxy-current-backend");
+          const lastUsedEl = document.getElementById("proxy-last-used");
+          const primaryCountEl = document.getElementById("proxy-primary-count");
+          const copilotCountEl = document.getElementById("proxy-copilot-count");
+          const totalCountEl = document.getElementById("proxy-total-count");
+          const rateLimitStatusEl = document.getElementById("proxy-rate-limit-status");
+          const rateLimitDetailEl = document.getElementById("proxy-rate-limit-detail");
+
+          function getProxyStatusUrl() {
+            const endpointUrl = endpointUrlInput.value.trim() || DEFAULT_ENDPOINT;
+            try {
+              const url = new URL(endpointUrl);
+              return `${url.origin}/proxy-status`;
+            } catch {
+              return "http://localhost:4141/proxy-status";
+            }
+          }
+
+          function formatDuration(seconds) {
+            if (seconds <= 0) return "now";
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = seconds % 60;
+            const parts = [];
+            if (h > 0) parts.push(`${h}h`);
+            if (m > 0) parts.push(`${m}m`);
+            if (s > 0 && h === 0) parts.push(`${s}s`);
+            return parts.join(" ");
+          }
+
+          async function fetchProxyStatus() {
+            try {
+              const res = await fetch(getProxyStatusUrl());
+              if (!res.ok) throw new Error("Not available");
+              const data = await res.json();
+
+              section.style.display = "";
+
+              const isPrimary = data.currentBackend === "primary";
+              currentBackendEl.textContent = isPrimary ? "Anthropic API" : "Copilot";
+              currentBackendEl.style.color = isPrimary
+                ? "var(--color-green-accent)"
+                : "var(--color-blue-accent)";
+
+              dot.style.backgroundColor = isPrimary
+                ? "var(--color-green-accent)"
+                : "var(--color-blue-accent)";
+
+              const lastLabels = { primary: "Anthropic", copilot: "Copilot", none: "N/A" };
+              lastUsedEl.textContent = `Last used: ${lastLabels[data.lastBackendUsed] || "--"}`;
+
+              primaryCountEl.textContent = data.primaryRequestCount;
+              copilotCountEl.textContent = data.copilotRequestCount;
+              totalCountEl.textContent = `Total: ${data.totalRequestCount} | Uptime: ${formatDuration(data.uptime)}`;
+
+              if (data.rateLimit.isPrimaryRateLimited) {
+                rateLimitStatusEl.textContent = "Rate Limited";
+                rateLimitStatusEl.style.color = "var(--color-red-accent)";
+                const resetIn = formatDuration(data.rateLimit.resetIn);
+                const claim = data.rateLimit.claim || "unknown";
+                rateLimitDetailEl.textContent = `${claim} | Resets in ${resetIn}`;
+              } else {
+                rateLimitStatusEl.textContent = "OK";
+                rateLimitStatusEl.style.color = "var(--color-green-accent)";
+                rateLimitDetailEl.textContent = "No rate limit active";
+              }
+            } catch {
+              // Proxy status not available — hide section silently
+              section.style.display = "none";
+            }
+          }
+
+          fetchProxyStatus();
+          setInterval(fetchProxyStatus, 5000);
+        })();
       });
     </script>
 

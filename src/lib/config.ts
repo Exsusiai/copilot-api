@@ -3,11 +3,18 @@ import fs from "node:fs"
 
 import { PATHS } from "./paths"
 
+export interface PrimaryProviderConfig {
+  baseUrl: string
+  authMode: "forward" | "apiKey"
+  apiKey?: string
+}
+
 export interface AppConfig {
   auth?: {
     apiKeys?: Array<string>
   }
   providers?: Record<string, ProviderConfig>
+  primaryProvider?: PrimaryProviderConfig
   extraPrompts?: Record<string, string>
   smallModel?: string
   responsesApiContextManagementModels?: Array<string>
@@ -20,6 +27,7 @@ export interface AppConfig {
   anthropicApiKey?: string
   useResponsesApiWebSearch?: boolean
   claudeTokenMultiplier?: number
+  primaryFallbackModelMap?: Record<string, string>
 }
 
 export interface ModelConfig {
@@ -329,4 +337,37 @@ export function isResponsesApiWebSearchEnabled(): boolean {
 export function getClaudeTokenMultiplier(): number {
   const config = getConfig()
   return config.claudeTokenMultiplier ?? 1.15
+}
+
+export function getPrimaryProviderConfig(): PrimaryProviderConfig | null {
+  const config = getConfig()
+  const primary = config.primaryProvider
+  if (!primary) {
+    return null
+  }
+
+  if (!primary.baseUrl) {
+    consola.warn("primaryProvider is configured but missing baseUrl")
+    return null
+  }
+  const baseUrl = normalizeProviderBaseUrl(primary.baseUrl)
+
+  const authMode = primary.authMode
+  if (authMode === "apiKey") {
+    const apiKey = (primary.apiKey ?? "").trim()
+    if (!apiKey) {
+      consola.warn(
+        "primaryProvider authMode is 'apiKey' but no apiKey provided",
+      )
+      return null
+    }
+    return { baseUrl, authMode, apiKey }
+  }
+
+  return { baseUrl, authMode }
+}
+
+export function getModelForCopilotFallback(model: string): string {
+  const config = getConfig()
+  return config.primaryFallbackModelMap?.[model] ?? model
 }
