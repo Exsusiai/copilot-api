@@ -22,8 +22,6 @@ import {
   parseRateLimitHeaders,
 } from "~/services/primary-provider"
 
-import type { SubagentMarker } from "./subagent-marker"
-
 import { type AnthropicMessagesPayload } from "./anthropic-types"
 import {
   handleWithChatCompletions,
